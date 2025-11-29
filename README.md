@@ -381,7 +381,7 @@ prompt_injection_attempts.inc()
 ## 📚 Recursos Adicionales
 
 ### Artículos de la Serie "Del Prompt al Compliance":
-- [Parte 1: Introducción]([https://linkedin.com/...](https://www.linkedin.com/pulse/del-prompt-al-compliance-arquitectura-de-seguridad-jose-cazorla-gij%C3%B3n-eraff)) 
+- [Parte 1: Introducción](https://www.linkedin.com/pulse/del-prompt-al-compliance-arquitectura-de-seguridad-jose-cazorla-gij%C3%B3n-eraff)
 - [Parte 2: Arquitectura de Seguridad]()
 - [Parte 3: MLOps Seguro]()
 

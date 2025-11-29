@@ -15,7 +15,8 @@ La adopción de LLMs introduce vectores de ataque sin precedentes, desde el **Pr
 Proponemos una arquitectura multicapa que integra controles en todo el ciclo de vida del modelo, desde la ingesta de datos hasta la interacción en tiempo de ejecución. Este repositorio te guía a través de las implementaciones clave.
 
 ****
-*(Aquí iría la imagen que generaremos del diagrama de arquitectura completa, con los textos bien.)*
+<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/1264e8f8-3b51-4dd0-a785-3b55253757b3" />
+
 
 ---
 
@@ -30,7 +31,8 @@ El AI Gateway es el punto de control crítico que inspecciona y filtra las inter
   - `dlp_filters.py`: Funciones para identificar y bloquear la fuga de PII (Información de Identificación Personal) en *prompts* y respuestas.
 
     ****
-    *(Aquí iría una imagen mostrando el flujo de la solicitud a través del AI Gateway, con sus subcomponentes de seguridad. Similar a la última imagen, pero enfocada solo en el AI Gateway y sus filtros internos.)*
+   <img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/9211b931-9dc9-4548-b16e-7590a7ed1030" />
+
 
 ### 2. Seguridad en MLOps: Blindando la Cadena de Suministro de la IA
 La seguridad debe integrarse en cada paso del ciclo de vida del modelo, desde la preparación de datos hasta el despliegue. Esto es **DevSecLLMOps** en acción.

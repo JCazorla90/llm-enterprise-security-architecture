@@ -9,6 +9,8 @@ Este repositorio complementa la serie de artículos **"Del Prompt al Compliance"
 
 En la era de la IA Generativa, la seguridad ya no es una opción, sino una necesidad imperativa. Aquí encontrarás cómo traducir los principios de DevSecOps, MLOps y gobernanza en soluciones técnicas concretas para proteger tus LLMs, datasets y pipelines.
 
+🚧 **En construcción** · 🧩 Contenido incompleto · 🔜 Más actualizaciones pronto
+
 ---
 
 ## 💡 El Problema: Un Nuevo Perímetro de Ataque

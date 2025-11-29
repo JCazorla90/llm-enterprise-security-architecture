@@ -1,0 +1,371 @@
+name: DevSecLLMOps Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: '3.10'
+  MODEL_REGISTRY: 'your-registry.azurecr.io'  # Azure Container Registry, AWS ECR, etc.
+  CRANIUM_API_URL: ${{ secrets.CRANIUM_API_URL }}
+  CRANIUM_API_KEY: ${{ secrets.CRANIUM_API_KEY }}
+
+jobs:
+  # ===================================================================
+  # JOB 1: SECURITY SCANNING - Código y Dependencias
+  # ===================================================================
+  security-scan:
+    name: 🔒 Security Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      # Escaneo de secretos hardcodeados
+      - name: 🔍 Scan for secrets with Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Escaneo de vulnerabilidades en dependencias
+      - name: 🔍 Dependency vulnerability scan (Snyk)
+        uses: snyk/actions/python@master
+        continue-on-error: true  # No bloquear en vulnerabilidades low/medium
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+      
+      # Análisis estático de código (SAST)
+      - name: 🔍 Static code analysis (Bandit)
+        run: |
+          pip install bandit
+          bandit -r src/ -f json -o bandit-report.json || true
+          cat bandit-report.json
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            snyk-report.json
+
+  # ===================================================================
+  # JOB 2: MODEL ARTIFACT SCANNING
+  # ===================================================================
+  model-security-scan:
+    name: 🤖 Model Artifact Security
+    runs-on: ubuntu-latest
+    needs: security-scan
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      # Escanear artefactos de modelos
+      - name: 🔍 Scan model artifacts for malicious code
+        run: |
+          echo "Scanning all model artifacts..."
+          
+          # Buscar todos los archivos de modelos
+          find models/ -type f \( -name "*.pkl" -o -name "*.safetensors" -o -name "*.h5" \) | while read model_file; do
+            echo "Scanning: $model_file"
+            python src/mlops_scripts/scan_model_artifact.py "$model_file"
+            
+            # Capturar exit code
+            if [ $? -ne 0 ]; then
+              echo "❌ Security issues found in $model_file"
+              exit 1
+            fi
+          done
+        continue-on-error: false  # BLOQUEAR si hay problemas críticos
+      
+      # Verificar firmas de modelos (si están implementadas)
+      - name: 🔐 Verify model signatures
+        run: |
+          echo "Verifying cryptographic signatures..."
+          # Integración con Sigstore/Cosign aquí
+          # cosign verify --key cosign.pub $MODEL_IMAGE
+      
+      - name: Upload model scan reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: model-scan-reports
+          path: models/**/*.scan_result.json
+
+  # ===================================================================
+  # JOB 3: DATASET LINEAGE VERIFICATION
+  # ===================================================================
+  dataset-lineage:
+    name: 📊 Dataset Lineage Check
+    runs-on: ubuntu-latest
+    needs: security-scan
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+      
+      # Verificar lineage de todos los datasets
+      - name: 🔍 Verify dataset lineage and compliance
+        run: |
+          echo "Checking dataset lineage..."
+          
+          # Buscar archivos de metadatos
+          find data/ -name "*_metadata.json" | while read metadata_file; do
+            echo "Checking: $metadata_file"
+            python src/mlops_scripts/check_dataset_lineage.py "$metadata_file"
+            
+            if [ $? -ne 0 ]; then
+              echo "❌ Compliance issues found in $metadata_file"
+              exit 1
+            fi
+          done
+        continue-on-error: false
+      
+      - name: Upload lineage reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: lineage-reports
+          path: data/**/*_lineage_check.json
+
+  # ===================================================================
+  # JOB 4: CONTAINER IMAGE SCANNING (si se usa Docker)
+  # ===================================================================
+  container-scan:
+    name: 🐳 Container Security Scan
+    runs-on: ubuntu-latest
+    needs: [model-security-scan, dataset-lineage]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: |
+          docker build -t ai-gateway:${{ github.sha }} -f Dockerfile .
+      
+      # Escaneo de vulnerabilidades en imagen Docker
+      - name: 🔍 Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ai-gateway:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ===================================================================
+  # JOB 5: GOVERNANCE - Registro en Cranium
+  # ===================================================================
+  register-in-governance:
+    name: 📋 Register in AI Governance Platform
+    runs-on: ubuntu-latest
+    needs: [model-security-scan, dataset-lineage]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔗 Register model in Cranium
+        run: |
+          # Ejemplo de integración con Cranium via API
+          # En producción, usar el SDK oficial de Cranium
+          
+          curl -X POST "$CRANIUM_API_URL/api/v1/models" \
+            -H "Authorization: Bearer $CRANIUM_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "ai-gateway",
+              "version": "${{ github.sha }}",
+              "type": "llm-gateway",
+              "repository": "${{ github.repository }}",
+              "commit": "${{ github.sha }}",
+              "branch": "${{ github.ref_name }}",
+              "security_scans": {
+                "passed": true,
+                "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+              },
+              "datasets_used": ["dataset-v1", "dataset-v2"],
+              "compliance": {
+                "gdpr": true,
+                "soc2": true
+              }
+            }'
+          
+          echo "✓ Model registered in Cranium AI Governance Platform"
+      
+      - name: 📊 Generate AI Bill of Materials (AI-BOM)
+        run: |
+          # Generar inventario completo de componentes AI
+          echo "Generating AI-BOM..."
+          
+          cat > ai-bom.json <<EOF
+          {
+            "spec_version": "1.0",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "components": {
+              "models": [
+                {
+                  "name": "gpt-4",
+                  "provider": "OpenAI",
+                  "version": "2024-04-01"
+                }
+              ],
+              "datasets": [
+                {
+                  "name": "training-data-v1",
+                  "lineage_verified": true,
+                  "compliance": ["GDPR", "CCPA"]
+                }
+              ],
+              "frameworks": [
+                {
+                  "name": "FastAPI",
+                  "version": "0.110.0"
+                },
+                {
+                  "name": "transformers",
+                  "version": "4.38.0"
+                }
+              ]
+            },
+            "security_controls": [
+              "prompt_injection_detection",
+              "dlp_scanning",
+              "rbac",
+              "audit_logging"
+            ]
+          }
+          EOF
+          
+          cat ai-bom.json
+      
+      - name: Upload AI-BOM
+        uses: actions/upload-artifact@v3
+        with:
+          name: ai-bom
+          path: ai-bom.json
+
+  # ===================================================================
+  # JOB 6: DEPLOY (solo si todos los checks pasan)
+  # ===================================================================
+  deploy:
+    name: 🚀 Deploy to Environment
+    runs-on: ubuntu-latest
+    needs: [container-scan, register-in-governance]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: 
+      name: production
+      url: https://ai-gateway.company.com
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🚀 Deploy to production
+        run: |
+          echo "Deploying to production environment..."
+          # Aquí integrar con tu plataforma de deployment:
+          # - Kubernetes (kubectl apply)
+          # - Azure App Service
+          # - AWS ECS/EKS
+          # - Cloud Run, etc.
+          
+          # Ejemplo con kubectl:
+          # kubectl set image deployment/ai-gateway \
+          #   ai-gateway=$MODEL_REGISTRY/ai-gateway:${{ github.sha }}
+          
+          echo "✓ Deployment completed"
+      
+      - name: 📢 Notify deployment
+        run: |
+          # Notificar a Slack, Teams, etc.
+          echo "Notifying team of successful deployment..."
+      
+      - name: 🔍 Post-deployment security check
+        run: |
+          echo "Running post-deployment security validation..."
+          # Verificar que los controles de seguridad estén activos
+          # Smoke tests de los endpoints de seguridad
+
+  # ===================================================================
+  # JOB 7: CONTINUOUS MONITORING SETUP
+  # ===================================================================
+  setup-monitoring:
+    name: 📡 Setup Continuous Monitoring
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: 📊 Configure Darktrace monitoring
+        run: |
+          echo "Configuring AI threat detection with Darktrace..."
+          # Integración con Darktrace API para configurar:
+          # - Baseline de comportamiento normal
+          # - Alertas de anomalías
+          # - Detección de ataques en tiempo real
+      
+      - name: 📈 Setup Prometheus metrics
+        run: |
+          echo "Configuring Prometheus scraping for security metrics..."
+          # Configurar scraping de /metrics endpoint del AI Gateway
+      
+      - name: 🚨 Configure alerting
+        run: |
+          echo "Setting up security alerts..."
+          # Alertas para:
+          # - Spike en prompt injection attempts
+          # - DLP violations
+          # - Comportamientos anómalos
+
+# ===================================================================
+# NOTIFICATION ON FAILURE
+# ===================================================================
+  notify-failure:
+    name: 🚨 Notify on Failure
+    runs-on: ubuntu-latest
+    needs: [security-scan, model-security-scan, dataset-lineage]
+    if: failure()
+    
+    steps:
+      - name: Send failure notification
+        run: |
+          echo "❌ Pipeline failed! Security or compliance issues detected."
+          # Enviar notificación a Slack/Teams
+          # Crear issue en GitHub
+          # Alertar al equipo de seguridad

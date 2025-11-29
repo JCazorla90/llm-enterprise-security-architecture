@@ -1,0 +1,420 @@
+# ============================================================================
+# RBAC Policy for Vector Database (Pinecone, Weaviate, Qdrant, etc.)
+# Control de Acceso Basado en Roles para bases de datos vectoriales
+# ============================================================================
+
+# Definición de la política
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Policy
+metadata:
+  name: vector-db-rbac-policy
+  namespace: ai-platform
+  labels:
+    app: llm-security
+    component: vector-db
+  annotations:
+    description: "RBAC policy for vector database access control in LLM applications"
+    last_updated: "2024-01-15"
+
+# ============================================================================
+# ROLES - Definición de roles con sus permisos
+# ============================================================================
+
+roles:
+  # --- ADMINISTRADOR ---
+  - name: vector-db-admin
+    description: "Administrador completo de la base de datos vectorial"
+    permissions:
+      - resource: "vectors/*"
+        actions:
+          - create
+          - read
+          - update
+          - delete
+          - list
+      - resource: "indexes/*"
+        actions:
+          - create
+          - read
+          - update
+          - delete
+          - list
+      - resource: "metadata/*"
+        actions:
+          - create
+          - read
+          - update
+          - delete
+      - resource: "collections/*"
+        actions:
+          - create
+          - read
+          - update
+          - delete
+          - list
+    conditions:
+      ip_whitelist:
+        - 10.0.0.0/8  # Red interna corporativa
+      mfa_required: true
+      audit_logging: true
+
+  # --- ML ENGINEER ---
+  - name: ml-engineer
+    description: "Ingeniero ML que entrena y actualiza modelos"
+    permissions:
+      - resource: "vectors/*"
+        actions:
+          - create
+          - read
+          - update
+          - list
+      - resource: "indexes/training/*"
+        actions:
+          - create
+          - read
+          - update
+      - resource: "metadata/*"
+        actions:
+          - read
+          - update
+      - resource: "collections/training/*"
+        actions:
+          - create
+          - read
+          - update
+          - list
+    conditions:
+      ip_whitelist:
+        - 10.0.0.0/8
+      time_based_access:
+        allowed_hours: "08:00-20:00"  # Horario laboral
+      audit_logging: true
+    rate_limits:
+      requests_per_minute: 1000
+      vectors_per_request: 1000
+
+  # --- DATA SCIENTIST ---
+  - name: data-scientist
+    description: "Científico de datos con acceso de lectura para análisis"
+    permissions:
+      - resource: "vectors/*"
+        actions:
+          - read
+          - list
+      - resource: "metadata/*"
+        actions:
+          - read
+      - resource: "collections/*"
+        actions:
+          - read
+          - list
+    conditions:
+      ip_whitelist:
+        - 10.0.0.0/8
+      audit_logging: true
+    rate_limits:
+      requests_per_minute: 500
+      vectors_per_request: 500
+
+  # --- LLM APPLICATION ---
+  - name: llm-application-prod
+    description: "Aplicación LLM en producción (acceso restringido)"
+    permissions:
+      - resource: "vectors/public/*"
+        actions:
+          - read
+      - resource: "vectors/user-specific/{user_id}/*"  # Solo sus vectores
+        actions:
+          - read
+          - create
+          - update
+      - resource: "metadata/public/*"
+        actions:
+          - read
+      - resource: "collections/public/*"
+        actions:
+          - read
+    conditions:
+      # Aplicación debe usar service account con certificate auth
+      authentication_method: "certificate"
+      audit_logging: true
+      pii_filtering: true  # Filtrar PII automáticamente
+    rate_limits:
+      requests_per_minute: 10000
+      vectors_per_request: 100
+    data_filtering:
+      # No permitir acceso a datos confidenciales
+      exclude_collections:
+        - "hr-data"
+        - "financial-records"
+        - "customer-pii"
+
+  # --- EXTERNAL PARTNER ---
+  - name: external-partner
+    description: "Partner externo con acceso limitado"
+    permissions:
+      - resource: "vectors/partner-shared/*"
+        actions:
+          - read
+      - resource: "collections/partner-shared/*"
+        actions:
+          - read
+    conditions:
+      ip_whitelist:
+        - 203.0.113.0/24  # IP del partner
+      authentication_method: "api-key"
+      expires_at: "2024-12-31T23:59:59Z"
+      audit_logging: true
+    rate_limits:
+      requests_per_minute: 100
+      vectors_per_request: 50
+
+  # --- READONLY USER ---
+  - name: readonly-user
+    description: "Usuario con acceso de solo lectura (auditoría, compliance)"
+    permissions:
+      - resource: "vectors/*"
+        actions:
+          - read
+          - list
+      - resource: "metadata/*"
+        actions:
+          - read
+      - resource: "collections/*"
+        actions:
+          - read
+          - list
+    conditions:
+      audit_logging: true
+    rate_limits:
+      requests_per_minute: 200
+
+# ============================================================================
+# USER ASSIGNMENTS - Asignación de roles a usuarios/servicios
+# ============================================================================
+
+role_bindings:
+  # Administradores
+  - subjects:
+      - kind: User
+        name: "admin@company.com"
+      - kind: User
+        name: "security-team@company.com"
+    role_ref: vector-db-admin
+
+  # ML Engineers
+  - subjects:
+      - kind: User
+        name: "ml-engineer-1@company.com"
+      - kind: User
+        name: "ml-engineer-2@company.com"
+      - kind: ServiceAccount
+        name: "mlops-service"
+        namespace: ml-platform
+    role_ref: ml-engineer
+
+  # Data Scientists
+  - subjects:
+      - kind: Group
+        name: "data-science-team"
+    role_ref: data-scientist
+
+  # Aplicaciones LLM
+  - subjects:
+      - kind: ServiceAccount
+        name: "ai-gateway"
+        namespace: ai-platform
+      - kind: ServiceAccount
+        name: "chatbot-service"
+        namespace: ai-platform
+    role_ref: llm-application-prod
+
+  # Partners externos
+  - subjects:
+      - kind: APIKey
+        name: "partner-acme-corp"
+    role_ref: external-partner
+
+# ============================================================================
+# DATA CLASSIFICATION - Clasificación de sensibilidad de datos
+# ============================================================================
+
+data_classification:
+  # Namespace/Collection sensitivity levels
+  collections:
+    - name: "public-knowledge"
+      sensitivity: "public"
+      accessible_by: ["*"]
+      
+    - name: "internal-docs"
+      sensitivity: "internal"
+      accessible_by: ["ml-engineer", "data-scientist", "llm-application-prod"]
+      
+    - name: "customer-data"
+      sensitivity: "confidential"
+      accessible_by: ["ml-engineer", "vector-db-admin"]
+      encryption_required: true
+      pii_present: true
+      
+    - name: "financial-records"
+      sensitivity: "restricted"
+      accessible_by: ["vector-db-admin"]
+      encryption_required: true
+      audit_all_access: true
+      
+    - name: "hr-data"
+      sensitivity: "restricted"
+      accessible_by: ["vector-db-admin"]
+      encryption_required: true
+      audit_all_access: true
+
+# ============================================================================
+# DYNAMIC ACCESS CONTROL - Control de acceso dinámico basado en contexto
+# ============================================================================
+
+dynamic_policies:
+  # Política 1: Restringir acceso fuera de horario laboral
+  - name: "business-hours-only"
+    description: "Solo permitir acceso a datos sensibles en horario laboral"
+    applies_to:
+      - collections: ["financial-records", "hr-data"]
+    conditions:
+      time_of_day: "08:00-18:00"
+      days_of_week: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+    action: "deny"
+    
+  # Política 2: Requerir aprobación para exportaciones masivas
+  - name: "bulk-export-approval"
+    description: "Requerir aprobación para exportar más de 10k vectores"
+    applies_to:
+      - actions: ["read"]
+    conditions:
+      vectors_count: "> 10000"
+    action: "require_approval"
+    approval_required_from: ["vector-db-admin"]
+    
+  # Política 3: Geo-fencing
+  - name: "geo-restriction"
+    description: "Solo permitir acceso desde ciertas regiones geográficas"
+    applies_to:
+      - collections: ["customer-data"]
+    conditions:
+      geo_location:
+        allowed_countries: ["US", "CA", "EU"]
+    action: "deny"
+
+# ============================================================================
+# AUDIT CONFIGURATION - Configuración de auditoría
+# ============================================================================
+
+audit:
+  enabled: true
+  log_all_access: true
+  retention_days: 365
+  
+  # Eventos a auditar
+  events:
+    - create_vector
+    - read_vector
+    - update_vector
+    - delete_vector
+    - create_collection
+    - delete_collection
+    - bulk_operations
+    - policy_changes
+    - authentication_failures
+  
+  # Destinos de logs
+  destinations:
+    - type: "cloudwatch"
+      aws_region: "us-east-1"
+      log_group: "/aws/vector-db/audit"
+    
+    - type: "splunk"
+      endpoint: "https://splunk.company.com:8088"
+      
+    - type: "siem"
+      endpoint: "https://siem.company.com/api/ingest"
+
+  # Alertas de seguridad
+  alerts:
+    - name: "excessive-access"
+      condition: "requests_per_minute > 10000"
+      severity: "high"
+      notify: ["security-team@company.com"]
+    
+    - name: "after-hours-sensitive-access"
+      condition: "time_of_day outside 08:00-18:00 AND collection in ['financial-records', 'hr-data']"
+      severity: "critical"
+      notify: ["security-team@company.com", "compliance@company.com"]
+    
+    - name: "bulk-deletion"
+      condition: "action == 'delete' AND count > 1000"
+      severity: "critical"
+      notify: ["vector-db-admin", "security-team@company.com"]
+
+# ============================================================================
+# ENCRYPTION SETTINGS - Configuración de cifrado
+# ============================================================================
+
+encryption:
+  # Cifrado en reposo
+  at_rest:
+    enabled: true
+    algorithm: "AES-256-GCM"
+    key_management: "aws-kms"  # o "azure-key-vault", "gcp-kms"
+    key_rotation_days: 90
+  
+  # Cifrado en tránsito
+  in_transit:
+    enabled: true
+    tls_version: "1.3"
+    certificate_authority: "company-ca"
+
+# ============================================================================
+# PII HANDLING - Manejo de información personal
+# ============================================================================
+
+pii_protection:
+  enabled: true
+  
+  # Detección automática de PII
+  auto_detection:
+    enabled: true
+    pii_types:
+      - email
+      - phone_number
+      - ssn
+      - credit_card
+      - ip_address
+  
+  # Acción al detectar PII
+  on_detection:
+    action: "mask"  # "mask", "block", "tokenize"
+    notify: ["compliance@company.com"]
+  
+  # Colecciones que pueden contener PII
+  allowed_pii_collections:
+    - "customer-data"  # Con permisos especiales
+    - "hr-data"
+
+# ============================================================================
+# INTEGRATION WITH AI GATEWAY
+# ============================================================================
+
+ai_gateway_integration:
+  enabled: true
+  
+  # El AI Gateway debe propagar el contexto del usuario final
+  # para aplicar políticas RBAC correctamente
+  user_context_propagation:
+    enabled: true
+    headers:
+      - "X-End-User-ID"
+      - "X-User-Role"
+      - "X-Department"
+  
+  # Filtrado de resultados basado en el usuario
+  result_filtering:
+    enabled: true
+    strategy: "per-user-isolation"  # Solo retornar vectores autorizados para ese usuario
